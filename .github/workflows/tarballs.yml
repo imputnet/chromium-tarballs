@@ -1,0 +1,47 @@
+name: chromium tarballs
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: chromium version (blank checks recent stable releases)
+        type: string
+        required: false
+
+concurrency:
+  group: chromium-release-tarballs
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      versions: ${{ steps.release.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/check_release.py
+
+  produce:
+    needs: check
+    if: needs.check.outputs.versions != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.check.outputs.versions) }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/produce.yml
+    with:
+      version: ${{ matrix.version }}
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

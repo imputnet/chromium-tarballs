@@ -1,0 +1,7 @@
+__pycache__/
+.work*/
+dist*/
+*.pyc
+linux-dist/
+bundles/
+release-assets/
