@@ -92,15 +92,22 @@ def main():
         raise ValueError("missing r2 configuration")
     files = collect_assets(version)
     checksums = Path("release-assets/SHA256SUMS")
+    hashes = {path: sha256(path, progress=True) for path in files}
     checksums.write_text(
-        "".join(f"{sha256(path, progress=True)}  {path.name}\n" for path in files),
+        "".join(f"{digest}  {path.name}\n" for path, digest in hashes.items()),
         encoding="ascii",
     )
+    checksum_files = [checksums]
+    for path, digest in hashes.items():
+        if path.name.endswith(".tar.zst"):
+            sidecar = path.with_name(path.name + ".hashes")
+            sidecar.write_text(f"sha256  {digest}  {path.name}\n", encoding="ascii")
+            checksum_files.append(sidecar)
     repository = os.environ["GITHUB_REPOSITORY"]
     command = ["gh", "release"]
 
     ensure_draft(command, tag, repository)
-    for path in [*files, checksums]:
+    for path in [*files, *checksum_files]:
         subprocess.run(
             [
                 "aws",
@@ -115,7 +122,8 @@ def main():
             check=True,
         )
     subprocess.run(
-        command + ["upload", tag, "--repo", repository, "--clobber", str(checksums)],
+        command
+        + ["upload", tag, "--repo", repository, "--clobber", *map(str, checksum_files)],
         check=True,
     )
     with tempfile.TemporaryDirectory() as temporary:
