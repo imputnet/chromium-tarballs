@@ -45,6 +45,7 @@ def verify_artifacts(directory, manifest, roles):
 
 def load_content_records(directory, manifest, roles):
     records = {}
+    archive_root = None
     for role in roles:
         content = manifest["contents"][role]
         path = artifact_path(directory, content["filename"])
@@ -60,8 +61,13 @@ def load_content_records(directory, manifest, roles):
             if name <= previous:
                 raise ValueError(f"unsorted or duplicate paths: {role}")
             safe_relative(name)
-            if not name.startswith("src/"):
-                raise ValueError(f"path outside src/: {name}")
+            if archive_root is None:
+                archive_root = name.split("/", 1)[0] + "/"
+            if archive_root not in (
+                "src/",
+                f"chromium-{manifest['version']}/",
+            ) or not name.startswith(archive_root):
+                raise ValueError(f"path outside archive root: {name}")
             previous = name
         records[role] = values
     return records
@@ -84,8 +90,11 @@ def validate_links(records):
             resolved = posixpath.normpath(
                 posixpath.join(posixpath.dirname(value["path"]), target)
             )
-            if PurePosixPath(target).is_absolute() or not resolved.startswith("src/"):
-                raise ValueError(f"symlink escapes src/: {value['path']}")
+            archive_root = value["path"].split("/", 1)[0] + "/"
+            if PurePosixPath(target).is_absolute() or not resolved.startswith(
+                archive_root
+            ):
+                raise ValueError(f"symlink escapes archive root: {value['path']}")
 
             prefix = value["path"] + "/"
             position = bisect_left(all_names, prefix)

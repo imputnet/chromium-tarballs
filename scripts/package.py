@@ -298,6 +298,10 @@ def load_base_reference(base_manifest, output, state):
             for name, value in state["policy"].items()
         )
         or locked["inputs"]["chromium"]["commit"] != chromium_commit
+        or any(
+            not record["path"].startswith(f"chromium-{state['version']}/")
+            for record in records["base"]
+        )
     ):
         raise ValueError("base does not match preparation")
 
@@ -336,7 +340,7 @@ def prepared_record(path, name, git=None, mode=None):
         return None
     if not path.is_file() and not path.is_symlink():
         return None
-    return file_record(path, "src/" + name, mode)
+    return file_record(path, name, mode)
 
 
 def original_record(path, name, git, changed):
@@ -347,12 +351,13 @@ def original_record(path, name, git, changed):
         )
         if stat.S_ISLNK(git["mode"]):
             link, data = os.fsdecode(data), None
-    record = file_record(path, "src/" + name, git["mode"], data, link)
+    record = file_record(path, name, git["mode"], data, link)
     return record, data
 
 
-def export_path(writer, source, name, git, changed, host, reference):
+def export_path(writer, source, name, git, changed, host, reference, archive_root):
     path = source / name
+    name = f"{archive_root}/{name}"
     if reference:
         record = prepared_record(path, name, git, mode=git["mode"] if git else None)
         if record and record != reference.records.get(record["path"]):
@@ -412,6 +417,7 @@ def export(workspace, output, base_manifest=None):
                     name in modified,
                     host,
                     reference,
+                    stem,
                 )
             now = time.monotonic()
             if number % 50000 == 0 or now >= next_report:
