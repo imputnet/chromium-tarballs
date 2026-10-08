@@ -11,6 +11,7 @@ import zipfile
 
 sys.path.insert(0, "scripts")
 from common import HOSTS, sha256, validate_version
+from consolidate import consolidate_bundles
 from verify import load_release
 
 
@@ -45,6 +46,7 @@ def add_bundle_assets(host, version, assets, expected_base):
 
 
 def collect_assets(version):
+    consolidate_bundles({host: Path("bundles") / f"{version}-{host}" for host in HOSTS})
     assets = Path("release-assets")
     assets.mkdir()
     base = None

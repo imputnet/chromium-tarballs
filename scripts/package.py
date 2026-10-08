@@ -1,7 +1,7 @@
-"""Export pristine Git sources and prepared host dependencies."""
+"""Package source files and prepared host dependencies."""
 
 import ast
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack
 from dataclasses import dataclass
 import io
 import json
@@ -15,8 +15,8 @@ import tarfile
 import time
 import warnings
 
-from common import ZSTD, canonical, file_record, log
-from common import safe_relative, sha256, validate_version, write_json
+from common import canonical, compressed_tar, file_record, log
+from common import safe_relative, sha256, update_checksums, validate_version, write_json
 
 EXCLUDED_PARTS = {
     ".git",
@@ -46,42 +46,6 @@ RETAINED_TOOL_DIRECTORIES = {
 class BaseReference:
     manifest: dict
     records: dict
-
-
-@contextmanager
-def compressed_tar(path):
-    temporary = path.with_name(path.name + ".tmp")
-    try:
-        with temporary.open("wb") as destination:
-            process = subprocess.Popen(ZSTD, stdin=subprocess.PIPE, stdout=destination)
-            try:
-                with tarfile.open(
-                    fileobj=process.stdin, mode="w|", format=tarfile.PAX_FORMAT
-                ) as archive:
-                    yield archive
-                    log(f"finishing {path.name}")
-                process.stdin.close()
-                while process.poll() is None:
-                    try:
-                        process.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        log(
-                            f"compressing {path.name}: {temporary.stat().st_size / 1024**3:.2f} gib"
-                        )
-                if process.returncode:
-                    raise subprocess.CalledProcessError(process.returncode, ZSTD)
-            except BrokenPipeError:
-                raise subprocess.CalledProcessError(process.wait() or 1, ZSTD) from None
-            finally:
-                if process.poll() is None:
-                    process.terminate()
-                with suppress(OSError):
-                    process.stdin.close()
-                process.wait()
-        temporary.replace(path)
-        log(f"packed {path.name}: {path.stat().st_size / 1024**3:.2f} gib")
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 class ArchiveWriter:
@@ -462,15 +426,3 @@ def export(workspace, output, base_manifest=None):
     write_json(output / "manifest.json", manifest)
     update_checksums(output, manifest)
     log(f"packaged: {output / 'manifest.json'}")
-
-
-def update_checksums(output, manifest):
-    files = {manifest["inputs"]["filename"]: manifest["inputs"]["sha256"]}
-    for record in manifest["contents"].values():
-        files[record["filename"]] = record["sha256"]
-    for record in manifest["formats"]["zstd"].values():
-        files[record["filename"]] = record["sha256"]
-    files["manifest.json"] = sha256(output / "manifest.json")
-    (output / "SHA256SUMS").write_text(
-        "".join(f"{value}  {name}\n" for name, value in sorted(files.items()))
-    )

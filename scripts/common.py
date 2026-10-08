@@ -1,5 +1,6 @@
 """Shared paths, checksums, process handling, and file metadata."""
 
+from contextlib import contextmanager, suppress
 import hashlib
 import json
 import os
@@ -9,12 +10,64 @@ import re
 import signal
 import subprocess
 import sys
+import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CHROMIUM_URL = "https://chromium.googlesource.com/chromium/src"
 TOOL_URL = "https://chromium.googlesource.com/chromium/tools/{}.git"
 HOSTS = ("linux-x64", "mac-x64", "mac-arm64", "win-x64")
 ZSTD = ("zstd", "-q", "-9", "-T4", "-c")
+
+
+@contextmanager
+def compressed_tar(path):
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        with temporary.open("wb") as destination:
+            process = subprocess.Popen(ZSTD, stdin=subprocess.PIPE, stdout=destination)
+            try:
+                with tarfile.open(
+                    fileobj=process.stdin, mode="w|", format=tarfile.PAX_FORMAT
+                ) as archive:
+                    yield archive
+                    log(f"finishing {path.name}")
+                process.stdin.close()
+                while process.poll() is None:
+                    try:
+                        process.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        size = temporary.stat().st_size / 1024**3
+                        log(f"compressing {path.name}: {size:.2f} gib")
+                if process.returncode:
+                    raise subprocess.CalledProcessError(process.returncode, ZSTD)
+            except BrokenPipeError:
+                raise subprocess.CalledProcessError(process.wait() or 1, ZSTD) from None
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                with suppress(OSError):
+                    process.stdin.close()
+                process.wait()
+        temporary.replace(path)
+        log(f"packed {path.name}: {path.stat().st_size / 1024**3:.2f} gib")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def zstd_stream(path):
+    process = subprocess.Popen(
+        ["zstd", "-q", "-d", "-c", str(path)], stdout=subprocess.PIPE
+    )
+    try:
+        yield process.stdout
+        if process.wait():
+            raise ValueError(f"could not read archive: {path}")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.stdout.close()
+        process.wait()
 
 
 def native_host():
@@ -73,6 +126,17 @@ def write_json(path, value):
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_bytes(canonical(value))
     temporary.replace(path)
+
+
+def update_checksums(output, manifest):
+    files = {manifest["inputs"]["filename"]: manifest["inputs"]["sha256"]}
+    for group in (manifest["contents"], manifest["formats"]["zstd"]):
+        for record in group.values():
+            files[record["filename"]] = record["sha256"]
+    files["manifest.json"] = sha256(output / "manifest.json")
+    (output / "SHA256SUMS").write_text(
+        "".join(f"{digest}  {name}\n" for name, digest in sorted(files.items()))
+    )
 
 
 def sha256(path, progress=False):

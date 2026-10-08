@@ -7,11 +7,10 @@ import os
 from pathlib import Path, PurePosixPath
 import posixpath
 import stat
-import subprocess
 import tarfile
 import time
 
-from common import HOSTS, file_record, log, safe_relative, sha256
+from common import HOSTS, file_record, log, safe_relative, sha256, zstd_stream
 
 
 def artifact_path(directory, filename):
@@ -124,15 +123,10 @@ def check_archive(path, records, timestamp):
     if not path.name.endswith(".tar.zst"):
         raise ValueError(f"expected .tar.zst: {path}")
     log(f"checking {path.name}: {len(records):,} files")
-    process = subprocess.Popen(
-        ["zstd", "-q", "-d", "-c", str(path)], stdout=subprocess.PIPE
-    )
     count = 0
     next_report = time.monotonic() + 30
-    try:
-        with tarfile.open(
-            fileobj=process.stdout, mode="r|", bufsize=1024 * 1024
-        ) as archive:
+    with zstd_stream(path) as stream:
+        with tarfile.open(fileobj=stream, mode="r|", bufsize=1024 * 1024) as archive:
             for member in archive:
                 if count == len(records):
                     raise ValueError(f"unexpected tar entry: {member.name}")
@@ -166,13 +160,8 @@ def check_archive(path, records, timestamp):
                 if now >= next_report:
                     log(f"checked {path.name}: {count:,}/{len(records):,} files")
                     next_report = now + 30
-        if process.wait() or count != len(records):
+        if count != len(records):
             raise ValueError(f"incomplete archive: {path}")
-    finally:
-        if process.poll() is None:
-            process.terminate()
-        process.stdout.close()
-        process.wait()
     log(f"checked {path.name}: {count:,} files")
 
 
