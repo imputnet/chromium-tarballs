@@ -122,6 +122,12 @@ def load_upstream_policy(build_dir, platform="desktop"):
         if path not in RETAINED_TOOL_DIRECTORIES and not path.startswith("build/linux/")
     ]
     if platform == "android":
+        values["TEST_DIRS"].extend(
+            (
+                "android_webview/tools/cts_archive/cipd",
+                "third_party/robolectric/cipd",
+            )
+        )
         retained = {
             "android_webview",
             "chrome/android",
