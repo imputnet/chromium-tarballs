@@ -41,6 +41,16 @@ def record_map(records):
     return {record["path"]: record for record in records}
 
 
+def same_content(left, right):
+    if right is None:
+        return False
+    left = left.copy()
+    right = right.copy()
+    left.pop("mode")
+    right.pop("mode")
+    return left == right
+
+
 def load_bundle(directory, host, base_info, base_path):
     manifest_path = directory / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -83,13 +93,14 @@ def load_bundles(directories):
 
 
 def shared_records(bundles):
-    shared = bundles[0].overlay.copy()
+    shared = {name: record.copy() for name, record in bundles[0].overlay.items()}
     for bundle in bundles[1:]:
-        shared = {
-            name: record
-            for name, record in shared.items()
-            if bundle.overlay.get(name) == record
-        }
+        for name, record in list(shared.items()):
+            candidate = bundle.overlay.get(name)
+            if not same_content(record, candidate):
+                del shared[name]
+                continue
+            record["mode"] |= candidate["mode"]
     return shared
 
 
