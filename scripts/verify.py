@@ -30,7 +30,7 @@ def validate_manifest(manifest):
     if set(manifest["contents"]) != expected_roles:
         raise ValueError(f"expected content lists: {', '.join(roles)}")
     if set(manifest["formats"]["zstd"]) != expected_roles:
-        raise ValueError("incomplete archive pair")
+        raise ValueError("incomplete archive stack")
 
 
 def verify_artifacts(directory, manifest, roles):

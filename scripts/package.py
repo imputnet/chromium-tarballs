@@ -50,10 +50,10 @@ RETAINED_TOOL_DIRECTORIES = {
 
 
 @dataclass(frozen=True)
-class BaseReference:
-    manifest: dict
+class ArchiveReference:
     records: dict
-    roles: tuple
+    contents: dict
+    archives: dict
 
 
 class ArchiveWriter:
@@ -265,7 +265,7 @@ def load_preparation(workspace, output):
     return checkout, state
 
 
-def load_base_reference(base_manifest, output, state, base_policy=None):
+def load_base_reference(base_manifest, output, state, base_policy):
     role = bundle_role(state)
     if role != "linux-x64" and base_manifest is None:
         raise ValueError(f"missing --base-manifest for {role}")
@@ -288,8 +288,7 @@ def load_base_reference(base_manifest, output, state, base_policy=None):
         or manifest["version"] != state["version"]
         or manifest["timestamp"] != state["timestamp"]
         or any(
-            locked["policy"].get(name) != value
-            for name, value in (base_policy or state["policy"]).items()
+            locked["policy"].get(name) != value for name, value in base_policy.items()
         )
         or locked["inputs"]["chromium"]["commit"] != chromium_commit
         or any(
@@ -306,16 +305,15 @@ def load_base_reference(base_manifest, output, state, base_policy=None):
         for record in (manifest["contents"][role], manifest["formats"]["zstd"][role]):
             source = directory / record["filename"]
             destination = output / record["filename"]
-            if source.resolve() != destination.resolve():
-                if source.name.endswith(".tar.zst"):
-                    link_or_copy(source, destination)
-                else:
-                    shutil.copyfile(source, destination)
+            if source.name.endswith(".tar.zst"):
+                link_or_copy(source, destination)
+            elif source.resolve() != destination.resolve():
+                shutil.copyfile(source, destination)
 
-    return BaseReference(
-        manifest=manifest,
+    return ArchiveReference(
         records=reference_records,
-        roles=roles,
+        contents={role: manifest["contents"][role] for role in roles},
+        archives={role: manifest["formats"]["zstd"][role] for role in roles},
     )
 
 
@@ -401,7 +399,9 @@ def export(workspace, output, base_manifest=None):
     platform = state.get("platform", "desktop")
     role = bundle_role(state)
     version = state["version"]
-    base_policy = load_upstream_policy(workspace / "tools/build")
+    base_policy = state["policy"]
+    if platform != "desktop":
+        base_policy = load_upstream_policy(workspace / "tools/build")
     reference = load_base_reference(base_manifest, output, state, base_policy)
     tracked, modified = tracked_files(checkout, state)
     (output / "manifest.json").unlink(missing_ok=True)
@@ -434,7 +434,8 @@ def export(workspace, output, base_manifest=None):
                     for path in archive_files.values()
                 )
                 log(
-                    f"scanned {number:,}/{len(paths):,} paths; {compressed / 1024**3:.2f} gib compressed"
+                    f"scanned {number:,}/{len(paths):,} paths; "
+                    f"{compressed / 1024**3:.2f} gib compressed"
                 )
                 next_report = now + 30
         log(f"scanned {len(paths):,} paths")
@@ -443,8 +444,7 @@ def export(workspace, output, base_manifest=None):
     for record in content.values():
         record["sha256"] = sha256(output / record["filename"], progress=True)
     if reference:
-        for dependency in reference.roles:
-            content[dependency] = reference.manifest["contents"][dependency]
+        content.update(reference.contents)
     manifest = {
         "schema": 1,
         "version": version,
@@ -466,10 +466,7 @@ def export(workspace, output, base_manifest=None):
         },
     }
     if reference:
-        for dependency in reference.roles:
-            manifest["formats"]["zstd"][dependency] = reference.manifest["formats"][
-                "zstd"
-            ][dependency]
+        manifest["formats"]["zstd"].update(reference.archives)
     write_json(output / "manifest.json", manifest)
     update_checksums(output, manifest)
     log(f"packaged: {output / 'manifest.json'}")
