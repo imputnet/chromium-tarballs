@@ -20,8 +20,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - name: prepare runner
@@ -31,7 +31,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           python3 .github/scripts/produce.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.version }}-linux-x64
           path: ${{ env.PRODUCER_OUTPUT }}/
@@ -39,7 +39,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.version }}-base-reference
           path: |
@@ -67,13 +67,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - name: prepare runner
         run: python .github/scripts/setup_runner.py
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.version }}-base-reference
           path: linux-dist/
@@ -82,7 +82,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           PRODUCER_HOST: ${{ matrix.host }}
         run: python .github/scripts/produce.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.version }}-${{ matrix.host }}
           path: |
@@ -108,18 +108,18 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - name: prepare runner
         run: python .github/scripts/setup_runner.py
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: matrix.platform == 'ios'
         with:
           name: ${{ inputs.version }}-base-reference
           path: linux-dist/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.version }}-${{ matrix.host }}
           path: host-dist/
@@ -129,7 +129,7 @@ jobs:
           PRODUCER_HOST: ${{ matrix.host }}
           PRODUCER_PLATFORM: ${{ matrix.platform }}
         run: python .github/scripts/produce.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.version }}-${{ matrix.platform }}
           path: |
@@ -146,13 +146,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - name: prepare runner
         run: python .github/scripts/setup_runner.py
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: ${{ inputs.version }}-*
           path: bundles/

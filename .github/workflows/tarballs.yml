@@ -23,7 +23,7 @@ jobs:
     outputs:
       versions: ${{ steps.release.outputs.versions }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: release
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
