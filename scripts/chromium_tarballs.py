@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from common import HOSTS, ROOT, validate_version
+from common import HOSTS, PLATFORMS, ROOT, validate_version
 from prepare import prepare
 from package import package
 from verify import verify
@@ -21,6 +21,7 @@ def parser():
     command.add_argument(
         "--host", choices=HOSTS, help="producer host (default: current machine)"
     )
+    command.add_argument("--platform", choices=PLATFORMS, default="desktop")
     command.add_argument("--workspace", type=Path, default=ROOT / ".work")
     command.add_argument("--cache", type=Path, help="shared git/cipd cache")
     command.set_defaults(function=prepare)
@@ -31,7 +32,7 @@ def parser():
     command.add_argument(
         "--base-manifest",
         type=Path,
-        help="linux base manifest",
+        help="linux base manifest, or desktop host manifest for a mobile overlay",
     )
     command.set_defaults(function=package)
 

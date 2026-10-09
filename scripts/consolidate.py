@@ -13,6 +13,7 @@ import time
 
 from common import (
     HOSTS,
+    bundle_role,
     canonical,
     compressed_tar,
     log,
@@ -27,7 +28,7 @@ from verify import check_archive, load_release
 @dataclass
 class Bundle:
     directory: Path
-    host: str
+    role: str
     manifest: dict
     base: dict
     overlay: dict
@@ -51,26 +52,26 @@ def same_content(left, right):
     return left == right
 
 
-def load_bundle(directory, host, base_info, base_path):
+def load_bundle(directory, role, base_info, base_path):
     manifest_path = directory / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     base = manifest["formats"]["zstd"]["base"]
     if base != base_info:
-        raise ValueError(f"base mismatch: {host}")
+        raise ValueError(f"base mismatch: {role}")
 
     path = directory / base["filename"]
     if not path.exists():
         os.link(base_path, path)
 
     _, manifest, records, _ = load_release(manifest_path)
-    if manifest["host"] != host:
+    if bundle_role(manifest) != role:
         raise ValueError(f"unexpected bundle: {directory}")
     return Bundle(
         directory,
-        host,
+        role,
         manifest,
         record_map(records["base"]),
-        record_map(records[host]),
+        record_map(records[role]),
     )
 
 
@@ -89,6 +90,33 @@ def load_bundles(directories):
         for bundle in bundles[1:]
     ):
         raise ValueError("bundle versions do not match")
+    return bundles
+
+
+def load_mobile_bundles(directories, desktops):
+    bundles = []
+    for role in ("android", "ios"):
+        if role not in directories:
+            continue
+        directory = directories[role]
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        if bundle_role(manifest) != role:
+            raise ValueError(f"unexpected bundle: {directory}")
+        desktop = next(bundle for bundle in desktops if bundle.role == manifest["host"])
+        for dependency in ("base", desktop.role):
+            info = manifest["formats"]["zstd"][dependency]
+            if info != desktop.manifest["formats"]["zstd"][dependency]:
+                raise ValueError(f"desktop dependency mismatch: {role}")
+            path = directory / info["filename"]
+            if not path.exists():
+                os.link(desktop.archive(dependency), path)
+        _, manifest, _, _ = load_release(manifest_path)
+        if any(
+            manifest[key] != desktop.manifest[key] for key in ("version", "timestamp")
+        ):
+            raise ValueError(f"desktop version mismatch: {role}")
+        bundles.append(Bundle(directory, role, manifest, {}, {}))
     return bundles
 
 
@@ -129,6 +157,7 @@ def write_archive(bundle, role, records, sources):
             with compressed_tar(output) as archive:
                 next_report = time.monotonic() + 30
                 for count, (_, member, source) in enumerate(members, 1):
+                    member.mode = records[member.name]["mode"]
                     if member.isfile():
                         with source.extractfile(member) as data:
                             archive.addfile(member, data)
@@ -157,18 +186,18 @@ def write_archive(bundle, role, records, sources):
     )
 
 
-def install_base(bundle, source):
+def install_dependency(bundle, source, role):
     if bundle is not source:
-        bundle.archive("base").unlink()
-        os.link(source.archive("base"), bundle.archive("base"))
-        source_contents = source.manifest["contents"]["base"]
+        bundle.archive(role).unlink()
+        os.link(source.archive(role), bundle.archive(role))
+        source_contents = source.manifest["contents"][role]
         shutil.copyfile(
             source.directory / source_contents["filename"],
             bundle.directory / source_contents["filename"],
         )
-        bundle.manifest["contents"]["base"] = dict(source_contents)
-        bundle.manifest["formats"]["zstd"]["base"] = dict(
-            source.manifest["formats"]["zstd"]["base"]
+        bundle.manifest["contents"][role] = dict(source_contents)
+        bundle.manifest["formats"]["zstd"][role] = dict(
+            source.manifest["formats"]["zstd"][role]
         )
 
 
@@ -179,6 +208,7 @@ def save_bundle(bundle):
 
 def consolidate_bundles(directories):
     bundles = load_bundles(directories)
+    mobile_bundles = load_mobile_bundles(directories, bundles)
     shared = shared_records(bundles)
     log(f"shared prepared files: {len(shared):,}")
     if not shared:
@@ -186,7 +216,7 @@ def consolidate_bundles(directories):
 
     base = bundles[0]
     original_base = base.archive("base")
-    original_overlay = base.archive(base.host)
+    original_overlay = base.archive(base.role)
     write_archive(
         base,
         "base",
@@ -201,9 +231,15 @@ def consolidate_bundles(directories):
         remaining = bundle.overlay.keys() - shared.keys()
         write_archive(
             bundle,
-            bundle.host,
+            bundle.role,
             {name: bundle.overlay[name] for name in remaining},
-            [(bundle.archive(bundle.host), remaining)],
+            [(bundle.archive(bundle.role), remaining)],
         )
-        install_base(bundle, base)
+        install_dependency(bundle, base, "base")
+        save_bundle(bundle)
+
+    for bundle in mobile_bundles:
+        desktop = next(item for item in bundles if item.role == bundle.manifest["host"])
+        install_dependency(bundle, desktop, "base")
+        install_dependency(bundle, desktop, desktop.role)
         save_bundle(bundle)

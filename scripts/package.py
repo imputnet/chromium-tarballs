@@ -15,7 +15,14 @@ import tarfile
 import time
 import warnings
 
-from common import canonical, compressed_tar, file_record, log
+from common import (
+    bundle_role,
+    canonical,
+    compressed_tar,
+    file_record,
+    link_or_copy,
+    log,
+)
 from common import safe_relative, sha256, update_checksums, validate_version, write_json
 
 EXCLUDED_PARTS = {
@@ -46,6 +53,7 @@ RETAINED_TOOL_DIRECTORIES = {
 class BaseReference:
     manifest: dict
     records: dict
+    roles: tuple
 
 
 class ArchiveWriter:
@@ -97,7 +105,7 @@ def parse_policy_file(path, function=None):
     return values
 
 
-def load_upstream_policy(build_dir):
+def load_upstream_policy(build_dir, platform="desktop"):
     """Read literal packaging rules from pinned upstream code, without executing it."""
 
     resources = build_dir / "recipes/recipe_modules/chromium/resources"
@@ -113,10 +121,25 @@ def load_upstream_policy(build_dir):
         for path in values["purge_directories"]
         if path not in RETAINED_TOOL_DIRECTORIES and not path.startswith("build/linux/")
     ]
+    if platform == "android":
+        retained = {
+            "android_webview",
+            "chrome/android",
+            "third_party/android_platform",
+            "third_party/closure_compiler",
+            "third_party/jdk/current",
+            "third_party/jdk/extras",
+        }
+    elif platform == "ios":
+        retained = {"ios"}
+    else:
+        retained = set()
+    for key in ("nonessential_dirs", "prune_directories", "purge_directories"):
+        values[key] = [path for path in values[key] if path not in retained]
     return values
 
 
-def include_path(name, policy, directory=False):
+def include_path(name, policy, directory=False, platform="desktop"):
     parts = PurePosixPath(name).parts
     basename = parts[-1]
     if any(part in EXCLUDED_PARTS for part in parts):
@@ -124,8 +147,9 @@ def include_path(name, policy, directory=False):
     if "out" in parts and "node_modules" not in parts:
         return False
     # Desktop macOS builds use Xcode's Swift toolchain.
-    if name == "third_party/swift-toolchain" or name.startswith(
-        "third_party/swift-toolchain/"
+    if platform != "ios" and (
+        name == "third_party/swift-toolchain"
+        or name.startswith("third_party/swift-toolchain/")
     ):
         return False
     # SDKs are installed locally; do not bundle host paths or private SDK downloads.
@@ -231,7 +255,9 @@ def load_preparation(workspace, output):
         raise ValueError("output must be outside checkout")
     state = json.loads((workspace / "preparation.json").read_text())
     validate_version(state["version"])
-    policy = load_upstream_policy(workspace / "tools/build")
+    policy = load_upstream_policy(
+        workspace / "tools/build", state.get("platform", "desktop")
+    )
     if any(state["policy"].get(name) != value for name, value in policy.items()):
         raise ValueError("packaging policy changed since prepare")
     state["policy"] = policy
@@ -239,27 +265,31 @@ def load_preparation(workspace, output):
     return checkout, state
 
 
-def load_base_reference(base_manifest, output, state):
-    host = state["host"]
-    if host != "linux-x64" and base_manifest is None:
-        raise ValueError(f"missing --base-manifest for {host}")
+def load_base_reference(base_manifest, output, state, base_policy=None):
+    role = bundle_role(state)
+    if role != "linux-x64" and base_manifest is None:
+        raise ValueError(f"missing --base-manifest for {role}")
     if base_manifest is None:
         return None
 
     from verify import load_release
 
-    directory, manifest, records, locked = load_release(base_manifest, base_only=True)
+    mobile = state.get("platform", "desktop") != "desktop"
+    directory, manifest, records, locked = load_release(
+        base_manifest, base_only=not mobile
+    )
     if directory == output:
         raise ValueError("base and overlay need separate output directories")
 
     chromium_commit = state["inputs"]["chromium"]["commit"]
     if (
-        manifest["host"] != "linux-x64"
+        manifest["host"] != (state["host"] if mobile else "linux-x64")
+        or manifest.get("platform", "desktop") != "desktop"
         or manifest["version"] != state["version"]
         or manifest["timestamp"] != state["timestamp"]
         or any(
             locked["policy"].get(name) != value
-            for name, value in state["policy"].items()
+            for name, value in (base_policy or state["policy"]).items()
         )
         or locked["inputs"]["chromium"]["commit"] != chromium_commit
         or any(
@@ -269,26 +299,36 @@ def load_base_reference(base_manifest, output, state):
     ):
         raise ValueError("base does not match preparation")
 
-    for record in (manifest["contents"]["base"], manifest["formats"]["zstd"]["base"]):
-        source = directory / record["filename"]
-        destination = output / record["filename"]
-        if source.resolve() != destination.resolve():
-            shutil.copyfile(source, destination)
+    roles = ("base", state["host"]) if mobile else ("base",)
+    reference_records = {}
+    for role in roles:
+        reference_records.update((record["path"], record) for record in records[role])
+        for record in (manifest["contents"][role], manifest["formats"]["zstd"][role]):
+            source = directory / record["filename"]
+            destination = output / record["filename"]
+            if source.resolve() != destination.resolve():
+                if source.name.endswith(".tar.zst"):
+                    link_or_copy(source, destination)
+                else:
+                    shutil.copyfile(source, destination)
 
     return BaseReference(
         manifest=manifest,
-        records={record["path"]: record for record in records["base"]},
+        records=reference_records,
+        roles=roles,
     )
 
 
-def discover_paths(source, tracked, policy):
+def discover_paths(source, tracked, policy, platform="desktop"):
     paths = set(tracked)
     for directory, dirs, files in os.walk(source, followlinks=False):
         relative = Path(directory).relative_to(source)
         dirs[:] = [
             name
             for name in dirs
-            if include_path((relative / name).as_posix(), policy, directory=True)
+            if include_path(
+                (relative / name).as_posix(), policy, directory=True, platform=platform
+            )
         ]
         symlinked_dirs = [
             name for name in dirs if (Path(directory) / name).is_symlink()
@@ -343,6 +383,7 @@ def write_inputs(output, state):
     inputs = {
         "version": state["version"],
         "host": state["host"],
+        "platform": state.get("platform", "desktop"),
         "targets": state["targets"],
         "configuration": state["configuration"],
         "inputs": state["inputs"],
@@ -357,21 +398,24 @@ def export(workspace, output, base_manifest=None):
     checkout, state = load_preparation(workspace, output)
     output.mkdir(parents=True, exist_ok=True)
     host = state["host"]
+    platform = state.get("platform", "desktop")
+    role = bundle_role(state)
     version = state["version"]
-    reference = load_base_reference(base_manifest, output, state)
+    base_policy = load_upstream_policy(workspace / "tools/build")
+    reference = load_base_reference(base_manifest, output, state, base_policy)
     tracked, modified = tracked_files(checkout, state)
     (output / "manifest.json").unlink(missing_ok=True)
     source = checkout / "src"
-    paths = discover_paths(source, tracked, state["policy"])
+    paths = discover_paths(source, tracked, state["policy"], platform)
 
-    roles = (host,) if reference else ("base", host)
+    roles = (role,) if reference else ("base", role)
     stem = f"chromium-{version}"
     archive_files = {role: output / f"{stem}-{role}.tar.zst" for role in roles}
     with ExitStack() as stack:
         writer = ArchiveWriter(stack, archive_files, state["timestamp"])
         next_report = time.monotonic() + 30
         for number, name in enumerate(sorted(paths), 1):
-            if include_path(name, state["policy"]):
+            if include_path(name, state["policy"], platform=platform):
                 safe_relative(name)
                 export_path(
                     writer,
@@ -379,7 +423,7 @@ def export(workspace, output, base_manifest=None):
                     name,
                     tracked.get(name),
                     name in modified,
-                    host,
+                    role,
                     reference,
                     stem,
                 )
@@ -399,11 +443,13 @@ def export(workspace, output, base_manifest=None):
     for record in content.values():
         record["sha256"] = sha256(output / record["filename"], progress=True)
     if reference:
-        content["base"] = reference.manifest["contents"]["base"]
+        for dependency in reference.roles:
+            content[dependency] = reference.manifest["contents"][dependency]
     manifest = {
         "schema": 1,
         "version": version,
         "host": host,
+        "platform": platform,
         "targets": state["targets"],
         "inputs": write_inputs(output, state),
         "timestamp": state["timestamp"],
@@ -420,9 +466,10 @@ def export(workspace, output, base_manifest=None):
         },
     }
     if reference:
-        manifest["formats"]["zstd"]["base"] = reference.manifest["formats"]["zstd"][
-            "base"
-        ]
+        for dependency in reference.roles:
+            manifest["formats"]["zstd"][dependency] = reference.manifest["formats"][
+                "zstd"
+            ][dependency]
     write_json(output / "manifest.json", manifest)
     update_checksums(output, manifest)
     log(f"packaged: {output / 'manifest.json'}")

@@ -10,31 +10,31 @@ from urllib.parse import quote
 import zipfile
 
 sys.path.insert(0, "scripts")
-from common import HOSTS, sha256, validate_version
+from common import BUNDLES, bundle_role, sha256, validate_version
 from consolidate import consolidate_bundles
 from verify import load_release
 
 
-def add_bundle_assets(host, version, assets, expected_base):
-    directory = Path("bundles") / f"{version}-{host}"
+def add_bundle_assets(role, version, assets, expected_base):
+    directory = Path("bundles") / f"{version}-{role}"
     manifest = json.loads((directory / "manifest.json").read_text())
     base = manifest["formats"]["zstd"]["base"]
     if expected_base is None:
         os.link(directory / base["filename"], assets / base["filename"])
     elif base != expected_base:
-        raise ValueError(f"base mismatch: {host}")
+        raise ValueError(f"base mismatch: {role}")
 
     # Overlay artifacts omit the duplicated base; restore it for hash verification.
     if not (directory / base["filename"]).exists():
         os.link(assets / base["filename"], directory / base["filename"])
     _, manifest, _, _ = load_release(directory / "manifest.json")
-    if manifest["host"] != host or manifest["version"] != version:
+    if bundle_role(manifest) != role or manifest["version"] != version:
         raise ValueError(f"unexpected bundle: {directory}")
 
-    overlay = manifest["formats"]["zstd"][host]
+    overlay = manifest["formats"]["zstd"][role]
     os.link(directory / overlay["filename"], assets / overlay["filename"])
     with zipfile.ZipFile(
-        assets / f"chromium-{version}-{host}.metadata.zip",
+        assets / f"chromium-{version}-{role}.metadata.zip",
         "w",
         zipfile.ZIP_DEFLATED,
     ) as metadata:
@@ -46,12 +46,14 @@ def add_bundle_assets(host, version, assets, expected_base):
 
 
 def collect_assets(version):
-    consolidate_bundles({host: Path("bundles") / f"{version}-{host}" for host in HOSTS})
+    consolidate_bundles(
+        {role: Path("bundles") / f"{version}-{role}" for role in BUNDLES}
+    )
     assets = Path("release-assets")
     assets.mkdir()
     base = None
-    for host in HOSTS:
-        base = add_bundle_assets(host, version, assets, base)
+    for role in BUNDLES:
+        base = add_bundle_assets(role, version, assets, base)
 
     return sorted(assets.iterdir())
 

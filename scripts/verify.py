@@ -10,7 +10,7 @@ import stat
 import tarfile
 import time
 
-from common import HOSTS, file_record, log, safe_relative, sha256, zstd_stream
+from common import bundle_roles, file_record, log, safe_relative, sha256, zstd_stream
 
 
 def artifact_path(directory, filename):
@@ -21,13 +21,14 @@ def artifact_path(directory, filename):
 
 
 def validate_manifest(manifest):
-    if manifest.get("schema") != 1 or manifest.get("host") not in HOSTS:
-        raise ValueError("unsupported manifest schema or host")
+    if manifest.get("schema") != 1:
+        raise ValueError("unsupported manifest schema")
+    roles = bundle_roles(manifest)
     if set(manifest.get("formats", {})) != {"zstd"}:
         raise ValueError("expected zstd archives")
-    expected_roles = {"base", manifest["host"]}
+    expected_roles = set(roles)
     if set(manifest["contents"]) != expected_roles:
-        raise ValueError(f"expected base and {manifest['host']} content lists")
+        raise ValueError(f"expected content lists: {', '.join(roles)}")
     if set(manifest["formats"]["zstd"]) != expected_roles:
         raise ValueError("incomplete archive pair")
 
@@ -105,7 +106,7 @@ def load_release(path, base_only=False):
     directory = path.resolve().parent
     manifest = json.loads(path.read_text())
     validate_manifest(manifest)
-    roles = ["base"] if base_only else list(manifest["contents"])
+    roles = ("base",) if base_only else bundle_roles(manifest)
     verify_artifacts(directory, manifest, roles)
 
     inputs = json.loads(
@@ -113,6 +114,8 @@ def load_release(path, base_only=False):
     )
     if inputs["version"] != manifest["version"] or inputs["host"] != manifest["host"]:
         raise ValueError("input lock mismatch")
+    if inputs.get("platform", "desktop") != manifest.get("platform", "desktop"):
+        raise ValueError("input platform mismatch")
 
     records = load_content_records(directory, manifest, roles)
     validate_links(records)
@@ -198,7 +201,7 @@ def verify_tree(destination, records):
 
 def verify(args):
     directory, manifest, records, _ = load_release(args.manifest)
-    for role in ("base", manifest["host"]):
+    for role in bundle_roles(manifest):
         check_archive(
             artifact_path(directory, manifest["formats"]["zstd"][role]["filename"]),
             records[role],
@@ -210,7 +213,7 @@ def verify(args):
         _, other, other_records, _ = load_release(args.compare)
         if records != other_records:
             raise ValueError("file manifests differ")
-        for role in ("base", manifest["host"]):
+        for role in bundle_roles(manifest):
             if (
                 manifest["formats"]["zstd"][role]["sha256"]
                 != other["formats"]["zstd"][role]["sha256"]

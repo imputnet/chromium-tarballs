@@ -63,6 +63,7 @@ jobs:
             runner: macos-26
           - host: win-x64
             runner: windows-2025
+    name: ${{ matrix.host }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
@@ -91,8 +92,56 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  publish:
+  mobile:
     needs: [linux, desktop]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            host: linux-x64
+            runner: ubuntu-24.04
+          - platform: ios
+            host: mac-arm64
+            runner: macos-26
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: prepare runner
+        run: python .github/scripts/setup_runner.py
+      - uses: actions/download-artifact@v4
+        if: matrix.platform == 'ios'
+        with:
+          name: ${{ inputs.version }}-base-reference
+          path: linux-dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.version }}-${{ matrix.host }}
+          path: host-dist/
+      - name: prepare, package, verify
+        env:
+          VERSION: ${{ inputs.version }}
+          PRODUCER_HOST: ${{ matrix.host }}
+          PRODUCER_PLATFORM: ${{ matrix.platform }}
+        run: python .github/scripts/produce.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.version }}-${{ matrix.platform }}
+          path: |
+            ${{ env.PRODUCER_OUTPUT }}/
+            !${{ env.PRODUCER_OUTPUT }}/*-base.tar.zst
+            !${{ env.PRODUCER_OUTPUT }}/*-${{ matrix.host }}.tar.zst
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: [linux, desktop, mobile]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

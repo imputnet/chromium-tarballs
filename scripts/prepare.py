@@ -10,6 +10,7 @@ from common import (
     ROOT,
     CHROMIUM_URL,
     TOOL_URL,
+    PLATFORMS,
     log,
     native_host,
     run,
@@ -18,17 +19,27 @@ from common import (
 from package import load_upstream_policy
 
 
-def configuration_for(host):
+def configuration_for(host, platform="desktop"):
+    if host not in PLATFORMS.get(platform, ()):
+        raise ValueError(f"unsupported build platform: {platform} on {host}")
+    target_os = [host.split("-")[0]]
+    if platform != "desktop":
+        target_os.append(platform)
+    targets = ["x64"] if host == "win-x64" else ["x64", "arm64"]
+    if platform == "android":
+        targets = ["arm", "arm64", "x86", "x64"]
+    elif platform == "ios":
+        targets = ["arm64"]
     return {
-        "target_os": host.split("-")[0],
-        "targets": ["x64"] if host == "win-x64" else ["x64", "arm64"],
+        "target_os": target_os,
+        "targets": targets,
         "depot_tools_commit": "dca727ba1f8fa8f1e3b12a815d065818bb61d395",
         "build_tools_commit": "f4615aeb0f8a2517390702416a17f3b10ab1e301",
         "custom_vars": {
             "checkout_configuration": "small",
             "checkout_pgo_profiles": True,
-            "checkout_android": False,
-            "checkout_ios": False,
+            "checkout_android": platform == "android",
+            "checkout_ios": platform == "ios",
             "checkout_chromeos": False,
             "checkout_fuchsia": False,
         },
@@ -95,7 +106,7 @@ def write_gclient_configuration(checkout, configuration, cache):
                 "custom_vars": configuration["custom_vars"],
             }
         ],
-        "target_os": [configuration["target_os"]],
+        "target_os": configuration["target_os"],
         "target_os_only": True,
         "target_cpu": configuration["targets"],
         "target_cpu_only": True,
@@ -135,7 +146,8 @@ def prepare(args):
     host = native_host()
     if args.host and args.host != host:
         raise ValueError(f"host mismatch: expected {args.host}, got {host}")
-    configuration = configuration_for(host)
+    platform = args.platform
+    configuration = configuration_for(host, platform)
     workspace = args.workspace.resolve()
     cache = args.cache.resolve() if args.cache else workspace / "cache"
     checkout = workspace / "checkout"
@@ -176,7 +188,7 @@ def prepare(args):
         cwd=checkout,
         env=environment,
     )
-    policy = load_upstream_policy(build_tools)
+    policy = load_upstream_policy(build_tools, platform)
     inputs = json.loads((checkout / "dependency-lock.json").read_text())
     chromium_commit = inputs["revisions"]["src"]["rev"]
     timestamp = int(
@@ -200,6 +212,7 @@ def prepare(args):
     state = {
         "version": args.version,
         "host": host,
+        "platform": platform,
         "targets": configuration["targets"],
         "timestamp": timestamp,
         "configuration": configuration,

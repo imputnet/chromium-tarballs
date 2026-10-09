@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import platform
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -16,7 +17,40 @@ ROOT = Path(__file__).resolve().parents[1]
 CHROMIUM_URL = "https://chromium.googlesource.com/chromium/src"
 TOOL_URL = "https://chromium.googlesource.com/chromium/tools/{}.git"
 HOSTS = ("linux-x64", "mac-x64", "mac-arm64", "win-x64")
+PLATFORMS = {
+    "desktop": HOSTS,
+    "android": ("linux-x64",),
+    "ios": ("mac-arm64",),
+}
+BUNDLES = (*HOSTS, "android", "ios")
 ZSTD = ("zstd", "-q", "-9", "-T4", "-c")
+
+
+def bundle_role(manifest):
+    host = manifest["host"]
+    platform = manifest.get("platform", "desktop")
+    if host not in PLATFORMS.get(platform, ()):
+        raise ValueError(f"unsupported build platform: {platform} on {host}")
+    if platform == "desktop":
+        return host
+    return platform
+
+
+def bundle_roles(manifest):
+    role = bundle_role(manifest)
+    if role == manifest["host"]:
+        return ("base", role)
+    return ("base", manifest["host"], role)
+
+
+def link_or_copy(source, destination):
+    if source.resolve() == destination.resolve():
+        return
+    destination.unlink(missing_ok=True)
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copyfile(source, destination)
 
 
 @contextmanager
