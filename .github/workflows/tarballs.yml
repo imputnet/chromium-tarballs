@@ -20,6 +20,9 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    permissions:
+      # needed to be able to see drafts
+      contents: write
     outputs:
       versions: ${{ steps.release.outputs.versions }}
     steps:

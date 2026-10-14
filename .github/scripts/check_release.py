@@ -3,7 +3,6 @@
 from functools import cache
 import json
 import os
-from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import sys
 
@@ -79,24 +78,31 @@ def candidates(requested):
     return sorted(canonical, key=version_number, reverse=True)
 
 
+def release_tags():
+    """List published and draft tags; the tag endpoint omits drafts."""
+    url = (
+        f"{os.environ['GITHUB_API_URL']}/repos/"
+        f"{os.environ['GITHUB_REPOSITORY']}/releases"
+    )
+    tags = set()
+    page = 1
+    while True:
+        releases = fetch(f"{url}?per_page=100&page={page}", os.environ["GH_TOKEN"])
+        tags.update(release["tag_name"] for release in releases)
+        if len(releases) < 100:
+            return tags
+        page += 1
+
+
 def main():
+    tags = release_tags()
     versions = []
     for version in candidates(os.environ.get("REQUESTED_VERSION", "").strip()):
         tag = f"chromium-{version}"
-        try:
-            release = fetch(
-                f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/releases/tags/{tag}",
-                os.environ["GH_TOKEN"],
-            )
-            # Retry incomplete drafts; leave published releases alone.
-            build = release["draft"]
-        except HTTPError as error:
-            if error.code != 404:
-                raise
-            build = True
+        build = tag not in tags
         if build:
             versions.append(version)
-        print(f"{tag}: {'build' if build else 'published'}")
+        print(f"{tag}: {'build' if build else 'exists'}")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"versions={json.dumps(versions)}\n")
 
