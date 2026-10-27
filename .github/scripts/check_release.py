@@ -3,8 +3,10 @@
 from functools import cache
 import json
 import os
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 import sys
+import time
 
 sys.path.insert(0, "scripts")
 from common import validate_version
@@ -20,30 +22,36 @@ def fetch(url, token=None):
     headers = {"User-Agent": "chromium-tarballs", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    with urlopen(Request(url, headers=headers), timeout=60) as response:
-        payload = response.read().decode()
-        return json.loads(payload.removeprefix(")]}'\n"))
+    for attempt in range(4):
+        try:
+            with urlopen(Request(url, headers=headers), timeout=60) as response:
+                return json.load(response)
+        except (URLError, TimeoutError, ConnectionError) as error:
+            if attempt == 3:
+                raise
+            delay = 5 * 2**attempt
+            print(f"fetch failed for {url}: {error}; retrying in {delay}s", flush=True)
+            time.sleep(delay)
 
 
 @cache
 def source_identity(version):
     # Ignore chrome/VERSION so version-only releases share a source identity.
+    url = "https://api.github.com/repos/chromium/chromium/git/trees"
     identity = []
-    for directory, excluded in (("", "chrome"), ("chrome/", "VERSION")):
-        tree = fetch(
-            f"https://chromium.googlesource.com/chromium/src/+/{version}/{directory}?format=JSON"
-        )
-        if not any(entry["name"] == excluded for entry in tree["entries"]):
-            raise ValueError(f"missing {directory}{excluded} in {version}")
+    reference = version
+    for excluded in ("chrome", "VERSION"):
+        entries = fetch(f"{url}/{reference}", os.environ["GH_TOKEN"])["tree"]
         identity.append(
             tuple(
                 sorted(
-                    (entry["name"], entry["mode"], entry["type"], entry["id"])
-                    for entry in tree["entries"]
-                    if entry["name"] != excluded
+                    (entry["path"], entry["mode"], entry["type"], entry["sha"])
+                    for entry in entries
+                    if entry["path"] != excluded
                 )
             )
         )
+        reference = next(entry["sha"] for entry in entries if entry["path"] == excluded)
     return tuple(identity)
 
 
@@ -80,10 +88,7 @@ def candidates(requested):
 
 def release_tags():
     """List published and draft tags; the tag endpoint omits drafts."""
-    url = (
-        f"{os.environ['GITHUB_API_URL']}/repos/"
-        f"{os.environ['GITHUB_REPOSITORY']}/releases"
-    )
+    url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/releases"
     tags = set()
     page = 1
     while True:
