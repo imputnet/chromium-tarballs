@@ -57,25 +57,22 @@ def source_identity(version):
 
 def candidates(requested):
     requested = validate_version(requested) if requested else None
-    versions, linux = set(), set()
-    for platform in ("Linux",) if requested else ("Linux", "Mac", "Windows"):
+    versions = set()
+    for platform in ("Linux", "Mac", "Windows"):
         releases = fetch(
             f"https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform={platform}&num={RELEASES_PER_PLATFORM}"
         )
         if not releases:
             raise ValueError(f"no stable release for {platform.lower()}")
-        selected = {
+        versions.update(
             validate_version(release["version"])
             for release in releases[:RELEASES_PER_PLATFORM]
-        }
-        versions.update(selected)
-        if platform == "Linux":
-            linux = selected
-    linux = sorted(linux, key=version_number)
+        )
+    known = sorted(versions, key=version_number)
     canonical = set()
-    for version in sorted({requested} if requested else versions, key=version_number):
+    for version in [requested] if requested else known:
         current_number = version_number(version)
-        for lower in linux:
+        for lower in known:
             lower_number = version_number(lower)
             if lower_number[:3] == current_number[:3] and lower_number < current_number:
                 if source_identity(lower) == source_identity(version):
